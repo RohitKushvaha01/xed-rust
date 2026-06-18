@@ -1,12 +1,16 @@
 import com.google.gson.Gson
 import java.net.URL
+import java.net.URI
 import com.google.gson.JsonObject
+import java.util.jar.JarFile
 
 plugins {
     alias(libs.plugins.android.application)
-    alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
 }
+
+val sdkMappingRules = layout.buildDirectory.file("sdk-mapping-rules.pro")
+val extractedMapping = layout.buildDirectory.file("sdk-mapping.txt")
 
 android {
     namespace = "com.rk.demo"
@@ -22,12 +26,18 @@ android {
 
     buildTypes {
         release {
-            // If you plan to enable ProGuard, then make sure to add @Keep on the main class. Otherwise, Xed-Editor won't be able to find it.
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
-                "proguard-rules.pro"
+                "proguard-rules.pro",
+                sdkMappingRules.get().asFile
             )
+        }
+        debug {
+            isDebuggable = true
+            isMinifyEnabled = false
+            isShrinkResources = false
         }
     }
     compileOptions {
@@ -41,6 +51,41 @@ android {
     }
 }
 
+tasks.register("extractSdkMapping") {
+    description = ""
+    dependsOn("downloadLatestJar")
+    val jarFile = file("libs/sdk.jar")
+    val outFile = extractedMapping.get().asFile
+    inputs.file(jarFile)
+    outputs.file(outFile)
+
+    doLast {
+        JarFile(jarFile).use { jar ->
+            val entry = jar.getJarEntry("mapping.txt")
+                ?: throw GradleException("mapping.txt not found in sdk.jar")
+
+            jar.getInputStream(entry).use { input ->
+                outFile.outputStream().use { output ->
+                    input.copyTo(output)
+                }
+            }
+        }
+    }
+}
+
+
+tasks.register("generateMappingRules") {
+    description = ""
+    dependsOn("extractSdkMapping")
+    val rulesFile = sdkMappingRules.get().asFile
+    val mappingFile = extractedMapping.get().asFile
+    inputs.file(mappingFile)
+    outputs.file(rulesFile)
+
+    doLast {
+        rulesFile.writeText("-applymapping ${mappingFile.absolutePath}")
+    }
+}
 
 // Always try to match the versions of library to the versions used in Xed-Editor
 dependencies {
@@ -105,47 +150,60 @@ tasks.register<DefaultTask>("downloadLatestJar") {
     description = "Checks and downloads the latest $ASSET_NAME from GitHub."
     group = "build"
 
-    outputs.file(outputFile)
-    outputs.file(timestampFile)
+    val out = outputFile.asFile
+    val ts = timestampFile.get().asFile
+    val apiUrl = API_URL
+    val downloadUrl = DOWNLOAD_URL
+    val assetName = ASSET_NAME
+
+    outputs.file(out)
+    outputs.file(ts)
 
     doLast {
-        outputFile.asFile.parentFile.mkdirs()
-        timestampFile.get().asFile.parentFile.mkdirs()
+        out.parentFile.mkdirs()
+        ts.parentFile.mkdirs()
 
         val remoteUpdatedAt: String
         try {
-            val json = URL(API_URL).readText()
+            val connection = URI(apiUrl).toURL().openConnection().apply {
+                connectTimeout = 10000
+                readTimeout = 10000
+            }
+            val json = connection.getInputStream().bufferedReader().use { it.readText() }
+            @Suppress("UNCHECKED_CAST")
             val releaseMap = Gson().fromJson(json, Map::class.java) as Map<String, Any>
             remoteUpdatedAt = releaseMap["updated_at"] as String
         } catch (e: Exception) {
-            logger.error("Failed to fetch GitHub API at $API_URL", e)
-            throw GradleException("Could not check latest release timestamp.", e)
+            throw GradleException("Could not check latest release timestamp: ${e.message}", e)
         }
 
-        val storedUpdatedAt = if (timestampFile.get().asFile.exists()) {
-            timestampFile.get().asFile.readText().trim()
+        val storedUpdatedAt = if (ts.exists()) {
+            ts.readText().trim()
         } else {
             null
         }
 
         if (remoteUpdatedAt == storedUpdatedAt) {
-            println("✅ $ASSET_NAME is up to date (Timestamp: $remoteUpdatedAt). Skipping download.")
+            println("✅ $assetName is up to date (Timestamp: $remoteUpdatedAt). Skipping download.")
             return@doLast
         }
 
         println("Release updated ($storedUpdatedAt -> $remoteUpdatedAt). Downloading new JAR...")
 
         try {
-            URL(DOWNLOAD_URL).openStream().use { inputStream ->
-                outputFile.asFile.outputStream().use { outputStream ->
+            val connection = URI(downloadUrl).toURL().openConnection().apply {
+                connectTimeout = 15000
+                readTimeout = 15000
+            }
+            connection.getInputStream().use { inputStream ->
+                out.outputStream().use { outputStream ->
                     inputStream.copyTo(outputStream)
                 }
             }
-            timestampFile.get().asFile.writeText(remoteUpdatedAt)
-            println("Successfully downloaded $ASSET_NAME to ${outputFile.asFile.path}")
+            ts.writeText(remoteUpdatedAt)
+            println("Successfully downloaded $assetName to ${out.path}")
         } catch (e: Exception) {
-            logger.error("Failed to download JAR from $DOWNLOAD_URL", e)
-            throw GradleException("Download failed.", e)
+            throw GradleException("Download failed: ${e.message}", e)
         }
     }
 }
@@ -156,35 +214,28 @@ tasks.register<Delete>("cleanApkOutputs") {
     delete(layout.buildDirectory.dir("outputs/apk"))
 }
 
+tasks.register<Delete>("cleanOutput") {
+    description = "Deletes the output directory."
+    group = "cleanup"
+    delete(File(rootDir, "output"))
+}
+
 tasks.named("preBuild").configure {
     dependsOn("cleanApkOutputs")
     dependsOn("downloadLatestJar")
+    dependsOn("generateMappingRules")
 }
 
 // --------------- generate the final zip file -----------------
 
 tasks.register<Zip>("createFinalZip") {
+    dependsOn("cleanOutput")
+    dependsOn("assembleDebug")
+    dependsOn("assembleRelease")
     outputs.upToDateWhen { false }
     description = "Archives the generated APK files into a single ZIP file."
     group = "build"
 
-    val apkFiles = layout.buildDirectory
-        .dir("outputs/apk")
-        .get()
-        .asFile
-        .walk()
-        .filter { it.extension == "apk" }
-        .toList()
-
-    if (apkFiles.size > 1) {
-        throw GradleException("multiple apk files detected, this build system canot handle multiple apk files")
-    }
-
-    if (apkFiles.isEmpty()) {
-        throw GradleException("No apk files found, run ./gradlew assembleRelease first")
-    }
-
-    val apk = apkFiles.first()
     val manifest = File(rootDir, "manifest.json")
 
     val manifestJson: JsonObject by lazy {
@@ -202,7 +253,21 @@ tasks.register<Zip>("createFinalZip") {
 
     archiveFileName.set("$extensionName.zip")
 
-    from(apk) { into("") }
+    val apkFiles = project.files(provider {
+        val files = layout.buildDirectory
+            .dir("outputs/apk")
+            .get()
+            .asFile
+            .walk()
+            .filter { it.extension == "apk" }
+            .toList()
+        if (files.isEmpty()) {
+            throw GradleException("No apk files found under build/outputs/apk. Run assembleRelease or assembleDebug first.")
+        }
+        files
+    })
+
+    from(apkFiles) { into("") }
     from(manifest) { into("") }
     from(iconFile) { into("") }
     from(readmeFile) { into("") }

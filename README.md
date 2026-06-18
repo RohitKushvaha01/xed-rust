@@ -34,13 +34,21 @@ If you rename the main class or move it to another package/folder, **you must up
 
 ### 3. Build the Extension
 
-To build the extension in **debug mode**, run:
+To build and package the extension, run:
 
 ```bash
-./compileDebug
+./gradlew :app:createFinalZip
 ```
 
-(You can create your own release script later if needed.)
+This command automatically:
+* Cleans previous output directories.
+* Compiles both `debug` and `release` APK variants.
+* Disables ProGuard (R8) obfuscation for the `debug` build.
+* Enables ProGuard (R8) obfuscation and applies the SDK mappings for the `release` build.
+* Packages both APKs into the final output ZIP file.
+
+> [!NOTE]
+> For a completely clean build from scratch, you can run `./gradlew clean :app:createFinalZip`.
 
 ---
 
@@ -52,6 +60,3 @@ After a successful build, your extension package will be created here:
 output/YourExtensionName.zip
 ```
 
-This ZIP file is what you load into **Xed-Editor** as a extension.
-
-This includes guides, API references, examples, and best practices for developing your extensions.
