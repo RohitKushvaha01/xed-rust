@@ -226,53 +226,45 @@ tasks.named("preBuild").configure {
     dependsOn("generateMappingRules")
 }
 
+// --------------- extension metadata ---------------
+
+val manifest = File(rootDir, "manifest.json")
+val manifestJson: JsonObject by lazy { Gson().fromJson(manifest.readText(), JsonObject::class.java) }
+val extensionName: String by lazy { manifestJson.get("name").asString }
+val iconFile = File(rootDir, "icon.png")
+val readmeFile = File(rootDir, "README.md")
+val changelogFile = File(rootDir, "CHANGELOG.md")
+
 // --------------- generate the final zip file -----------------
 
 tasks.register<Zip>("createFinalZip") {
     dependsOn("cleanOutput")
     dependsOn("assembleDebug")
     dependsOn("assembleRelease")
-    outputs.upToDateWhen { false }
-    description = "Archives the generated APK files into a single ZIP file."
-    group = "build"
-
-    val manifest = File(rootDir, "manifest.json")
-
-    val manifestJson: JsonObject by lazy {
-        val text = manifest.readText()
-        Gson().fromJson(text, JsonObject::class.java)
-    }
-
-    val extensionName: String by lazy {
-        manifestJson.get("name").asString
-    }
-
-    val iconFile = File(rootDir, "icon.png")
-    val readmeFile = File(rootDir, "README.md")
-    val changelogFile = File(rootDir, "CHANGELOG.md")
 
     archiveFileName.set("$extensionName.zip")
 
-    val apkFiles = project.files(provider {
-        val files = layout.buildDirectory
-            .dir("outputs/apk")
-            .get()
-            .asFile
-            .walk()
-            .filter { it.extension == "apk" }
-            .toList()
-        if (files.isEmpty()) {
-            throw GradleException("No apk files found under build/outputs/apk. Run assembleRelease or assembleDebug first.")
-        }
-        files
-    })
+    val apkFiles = fileTree(layout.buildDirectory.dir("outputs/apk")) {
+        include("**/*.apk")
+    }
 
-    from(apkFiles) { into("") }
-    from(manifest) { into("") }
-    from(iconFile) { into("") }
-    from(readmeFile) { into("") }
-    from(changelogFile) { into("") }
+    from(apkFiles) {
+        eachFile {
+            path = name
+        }
+        includeEmptyDirs = false
+    }
+
+    doFirst {
+        if (apkFiles.isEmpty) {
+            throw GradleException("No APK files found.")
+        }
+    }
+
+    from(manifest)
+    from(iconFile)
+    from(readmeFile)
+    from(changelogFile)
 
     destinationDirectory.set(File(rootDir, "output"))
 }
-

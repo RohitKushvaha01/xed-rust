@@ -31,11 +31,11 @@ jobs:
 
       # Make scripts executable
       - name: Make scripts executable
-        run: chmod +x ./gradlew && chmod +x ./compileDebug && chmod +x ./compileRelease
+        run: chmod +x ./gradlew
 
-      # Build (Debug)
-      - name: Compile Debug
-        run: ./compileDebug
+      # Build
+      - name: Build Test
+        run: ./gradlew :app:createFinalZip
         
       # Upload extension artifacts
       - name: Upload ZIP
