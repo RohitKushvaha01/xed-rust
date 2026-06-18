@@ -238,6 +238,7 @@ val changelogFile = File(rootDir, "CHANGELOG.md")
 // --------------- generate the final zip file -----------------
 
 tasks.register<Zip>("createFinalZip") {
+    description = ""
     dependsOn("cleanOutput")
     dependsOn("assembleDebug")
     dependsOn("assembleRelease")
